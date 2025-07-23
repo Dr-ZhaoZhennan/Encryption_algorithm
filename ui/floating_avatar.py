@@ -1,12 +1,10 @@
 import sys
-from PyQt5.QtWidgets import QWidget, QApplication, QMenu, QAction, QVBoxLayout, QComboBox, QTextEdit, QPushButton, QHBoxLayout, QInputDialog, QGraphicsDropShadowEffect, QLabel
-from PyQt5.QtGui import QPainter, QPixmap, QRegion, QCursor, QColor, QFont, QClipboard
-from PyQt5.QtCore import Qt, QPoint, QPropertyAnimation, QRect, QEasingCurve, QTimer
+from PyQt5.QtWidgets import QWidget, QApplication, QMenu, QAction, QVBoxLayout, QComboBox, QTextEdit, QPushButton, QHBoxLayout, QGraphicsDropShadowEffect, QLabel
+from PyQt5.QtGui import QPainter, QPixmap, QRegion, QCursor, QColor, QFont
+from PyQt5.QtCore import Qt, QPoint, QTimer, QRect
 import os
 import json
-# 只导入实际存在的算法模块
-from crypto import basic_replace, unicode_shift, base64_codec
-# reverse_text 只在用到时动态import
+from crypto import unicode_shift, base64_codec
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
 
@@ -31,24 +29,19 @@ class PopupPanel(QWidget):
         super().__init__(parent)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(320, 330)
-        # 阴影
+        self.setFixedSize(320, 260)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(24)
         shadow.setColor(QColor(0,0,0,120))
         shadow.setOffset(0, 6)
         self.setGraphicsEffect(shadow)
-        # 只保留4种最稳定算法
         self.algorithms = [
-            ('基础替换加密（支持中文）', '每个字符用下表替换：a→x, b→y, ...，你→好, 好→你, ...\n解密时用逆表替换：x→a, y→b, ...，好→你, 你→好。可手动查表还原。\n示例：明文“你好abc”→密文“好你xyz”'),
             ('Unicode码位移（支持中文）', '每个字符的Unicode码+3，解密时每个字符的Unicode码-3。\n可用Python、在线Unicode工具还原。\n示例：明文“abc”→密文“def”，明文“你好”→密文“呜咍”'),
-            ('Base64（支持中文）', '将文本用Base64编码，解密时用任意Base64解码工具还原。\n如 https://base64.us/\n示例：明文“abc”→密文“YWJj”，明文“你好”→密文“5L2g5aW9”'),
-            ('字符顺序反转（支持中文）', '将文本整体反转，解密时再反转一次即可还原。\n示例：明文“你好abc”→密文“cba好你”')
+            ('Base64（支持中文）', '将文本用Base64编码，解密时用任意Base64解码工具还原。\n如 https://base64.us/\n示例：明文“abc”→密文“YWJj”，明文“你好”→密文“5L2g5aW9”')
         ]
         self.combo = QComboBox(self)
         for name, _ in self.algorithms:
             self.combo.addItem(name)
-        # 解密算法提示
         self.decrypt_hint = QLabel(self)
         self.decrypt_hint.setStyleSheet('color:#bbb;font-size:12px;')
         self.decrypt_hint.setText('解密算法：' + self.combo.currentText())
@@ -60,13 +53,11 @@ class PopupPanel(QWidget):
         self.btn_decrypt = QPushButton('解密', self)
         self.btn_copy = QPushButton('复制', self)
         self.btn_clear = QPushButton('清空', self)
-        # 解密算法原理说明
         self.decrypt_detail = QLabel(self)
         self.decrypt_detail.setStyleSheet('color:#888;font-size:12px;')
         self.decrypt_detail.setWordWrap(True)
         self.decrypt_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.decrypt_detail.setText('')
-        # 布局
         vbox = QVBoxLayout()
         vbox.setContentsMargins(20, 20, 20, 20)
         vbox.setSpacing(8)
@@ -81,11 +72,8 @@ class PopupPanel(QWidget):
         vbox.addLayout(hbox)
         vbox.addWidget(self.decrypt_detail)
         self.setLayout(vbox)
-        # 圆角
         self.radius = 18
-        # 回车快捷键
         self.text_edit.installEventFilter(self)
-        # 绑定按钮
         self.btn_encrypt.clicked.connect(self.encrypt_text)
         self.btn_decrypt.clicked.connect(self.decrypt_text)
         self.btn_copy.clicked.connect(self.copy_text)
@@ -121,17 +109,9 @@ class PopupPanel(QWidget):
         idx = self.combo.currentIndex()
         try:
             if idx == 0:
-                from crypto import basic_replace
-                result = basic_replace.encrypt(text)
-            elif idx == 1:
-                from crypto import unicode_shift
                 result = unicode_shift.encrypt(text)
-            elif idx == 2:
-                from crypto import base64_codec
+            elif idx == 1:
                 result = base64_codec.encrypt(text)
-            elif idx == 3:
-                import crypto.reverse_text as reverse_text
-                result = reverse_text.encrypt(text)
             else:
                 result = text
             self.text_edit.setPlainText(result)
@@ -143,17 +123,9 @@ class PopupPanel(QWidget):
         idx = self.combo.currentIndex()
         try:
             if idx == 0:
-                from crypto import basic_replace
-                result = basic_replace.decrypt(text)
-            elif idx == 1:
-                from crypto import unicode_shift
                 result = unicode_shift.decrypt(text)
-            elif idx == 2:
-                from crypto import base64_codec
+            elif idx == 1:
                 result = base64_codec.decrypt(text)
-            elif idx == 3:
-                import crypto.reverse_text as reverse_text
-                result = reverse_text.decrypt(text)
             else:
                 result = text
             self.text_edit.setPlainText(result)
@@ -162,8 +134,7 @@ class PopupPanel(QWidget):
 
     def copy_text(self):
         text = self.text_edit.toPlainText()
-        clipboard = QApplication.clipboard()
-        clipboard.setText(text)
+        QApplication.clipboard().setText(text)
 
     def clear_text(self):
         self.text_edit.clear()
@@ -178,17 +149,14 @@ class FloatingAvatar(QWidget):
         self.drag_position = None
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
-        # 加载头像图片
         avatar_path = os.path.join(os.path.dirname(__file__), 'resources', 'photo.png')
         if os.path.exists(avatar_path):
             self.avatar = QPixmap(avatar_path).scaled(self.avatar_size, self.avatar_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         else:
             self.avatar = QPixmap(self.avatar_size, self.avatar_size)
             self.avatar.fill(QColor(120, 120, 120))
-        # 弹出面板
         self.panel = PopupPanel(self)
         self.panel.hide()
-        # 读取窗口位置或居中
         self.restore_or_center()
 
     def restore_or_center(self):
@@ -228,7 +196,6 @@ class FloatingAvatar(QWidget):
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.LeftButton and self.drag_position:
             self.move(event.globalPos() - self.drag_position)
-            # 面板跟随头像移动
             if self.panel.isVisible():
                 self.update_panel_pos()
             event.accept()
@@ -248,7 +215,6 @@ class FloatingAvatar(QWidget):
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        # 延迟隐藏，避免鼠标快速移到面板时闪烁
         QTimer.singleShot(200, self.try_hide_panel)
         super().leaveEvent(event)
 
@@ -256,16 +222,12 @@ class FloatingAvatar(QWidget):
         self.update_panel_pos()
         self.panel.show()
         self.panel.raise_()
-        # 动画（可选）
-        # ...
 
     def try_hide_panel(self):
-        # 只有当鼠标不在头像和面板上时才隐藏
         if not self.underMouse() and not self.panel.underMouse():
             self.panel.hide()
 
     def update_panel_pos(self):
-        # 面板显示在头像正上方
         screen = QApplication.primaryScreen().geometry()
         x = self.x() + (self.avatar_size - self.panel.width()) // 2
         y = self.y() - self.panel.height() - 8
