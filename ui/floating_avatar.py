@@ -5,6 +5,7 @@ from PyQt5.QtCore import Qt, QPoint, QTimer, QRect
 import os
 import json
 from crypto import unicode_shift, base64_codec
+from .settings_window import SettingsWindow
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config.json')
 
@@ -32,7 +33,16 @@ class PopupPanel(QWidget):
             self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
             self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_InputMethodEnabled, True)
-        self.setFixedSize(320, 260)
+        self.setFixedSize(320, 320)  # 增加高度以容纳设置按钮
+        
+        # 初始化设置
+        self.settings = {
+            'key_enabled': False,
+            'key': '',
+            'auto_copy': False,
+            'save_key': True
+        }
+        self.settings_window = None
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(24)
         shadow.setColor(QColor(0,0,0,120))
@@ -56,6 +66,7 @@ class PopupPanel(QWidget):
         self.btn_decrypt = QPushButton('解密', self)
         self.btn_copy = QPushButton('复制', self)
         self.btn_clear = QPushButton('清空', self)
+        self.btn_settings = QPushButton('设置', self)
         self.decrypt_detail = QLabel(self)
         self.decrypt_detail.setStyleSheet('color:#888;font-size:12px;')
         self.decrypt_detail.setWordWrap(True)
@@ -67,12 +78,20 @@ class PopupPanel(QWidget):
         vbox.addWidget(self.combo)
         vbox.addWidget(self.decrypt_hint)
         vbox.addWidget(self.text_edit)
-        hbox = QHBoxLayout()
-        hbox.addWidget(self.btn_encrypt)
-        hbox.addWidget(self.btn_decrypt)
-        hbox.addWidget(self.btn_copy)
-        hbox.addWidget(self.btn_clear)
-        vbox.addLayout(hbox)
+        # 第一行按钮
+        hbox1 = QHBoxLayout()
+        hbox1.addWidget(self.btn_encrypt)
+        hbox1.addWidget(self.btn_decrypt)
+        hbox1.addWidget(self.btn_copy)
+        hbox1.addWidget(self.btn_clear)
+        vbox.addLayout(hbox1)
+        
+        # 第二行按钮（设置）
+        hbox2 = QHBoxLayout()
+        hbox2.addStretch()
+        hbox2.addWidget(self.btn_settings)
+        hbox2.addStretch()
+        vbox.addLayout(hbox2)
         vbox.addWidget(self.decrypt_detail)
         self.setLayout(vbox)
         self.radius = 18
@@ -81,8 +100,12 @@ class PopupPanel(QWidget):
         self.btn_decrypt.clicked.connect(self.decrypt_text)
         self.btn_copy.clicked.connect(self.copy_text)
         self.btn_clear.clicked.connect(self.clear_text)
+        self.btn_settings.clicked.connect(self.open_settings)
         self.combo.currentIndexChanged.connect(self.update_decrypt_detail)
         self.text_edit.textChanged.connect(self.update_decrypt_detail)
+        
+        # 加载设置
+        self.load_settings_from_config()
 
     def ensure_input_focus(self):
         try:
@@ -105,7 +128,17 @@ class PopupPanel(QWidget):
     def update_decrypt_detail(self):
         idx = self.combo.currentIndex()
         _, detail = self.algorithms[idx]
-        self.decrypt_detail.setText('解密原理：\n' + detail)
+        
+        # 添加密钥信息
+        key_info = ""
+        if self.settings.get('key_enabled', False):
+            key = self.settings.get('key', '')
+            if key:
+                key_info = f"\n\n🔐 密钥增强: 已启用 (密钥: {key[:4]}****)\n解密时需要使用相同的密钥。"
+            else:
+                key_info = "\n\n🔐 密钥增强: 已启用但未设置密钥\n请在设置中配置密钥。"
+        
+        self.decrypt_detail.setText('解密原理：\n' + detail + key_info)
 
     def eventFilter(self, obj, event):
         if obj == self.text_edit and event.type() == event.KeyPress:
@@ -125,13 +158,22 @@ class PopupPanel(QWidget):
         text = self.text_edit.toPlainText()
         idx = self.combo.currentIndex()
         try:
+            # 获取密钥
+            key = self.settings.get('key', '') if self.settings.get('key_enabled', False) else None
+            
             if idx == 0:
-                result = unicode_shift.encrypt(text)
+                result = unicode_shift.encrypt(text, key)
             elif idx == 1:
-                result = base64_codec.encrypt(text)
+                result = base64_codec.encrypt(text, key)
             else:
                 result = text
+            
             self.text_edit.setPlainText(result)
+            
+            # 自动复制到剪贴板
+            if self.settings.get('auto_copy', False):
+                QApplication.clipboard().setText(result)
+                
         except Exception as e:
             self.text_edit.setPlainText(f'加密出错：{e}')
 
@@ -139,13 +181,22 @@ class PopupPanel(QWidget):
         text = self.text_edit.toPlainText()
         idx = self.combo.currentIndex()
         try:
+            # 获取密钥
+            key = self.settings.get('key', '') if self.settings.get('key_enabled', False) else None
+            
             if idx == 0:
-                result = unicode_shift.decrypt(text)
+                result = unicode_shift.decrypt(text, key)
             elif idx == 1:
-                result = base64_codec.decrypt(text)
+                result = base64_codec.decrypt(text, key)
             else:
                 result = text
+            
             self.text_edit.setPlainText(result)
+            
+            # 自动复制到剪贴板
+            if self.settings.get('auto_copy', False):
+                QApplication.clipboard().setText(result)
+                
         except Exception as e:
             self.text_edit.setPlainText(f'解密出错：{e}')
 
@@ -155,6 +206,47 @@ class PopupPanel(QWidget):
 
     def clear_text(self):
         self.text_edit.clear()
+    
+    def open_settings(self):
+        """打开设置窗口"""
+        if self.settings_window is None:
+            self.settings_window = SettingsWindow(self, self.settings)
+            self.settings_window.settings_saved.connect(self.on_settings_saved)
+        
+        self.settings_window.load_settings()  # 重新加载当前设置
+        self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
+    
+    def on_settings_saved(self, new_settings):
+        """设置保存回调"""
+        self.settings.update(new_settings)
+        self.save_settings_to_config()
+        self.update_decrypt_detail()  # 更新解密说明
+    
+    def load_settings_from_config(self):
+        """从配置文件加载设置"""
+        config = load_config()
+        
+        # 加载密钥设置
+        self.settings['key_enabled'] = config.get('key_enabled', False)
+        self.settings['key'] = config.get('key', '')
+        self.settings['auto_copy'] = config.get('auto_copy', False)
+        self.settings['save_key'] = config.get('save_key', True)
+    
+    def save_settings_to_config(self):
+        """保存设置到配置文件"""
+        config = load_config()
+        
+        # 只有在用户选择保存密钥时才保存
+        if self.settings.get('save_key', True):
+            config['key_enabled'] = self.settings.get('key_enabled', False)
+            config['key'] = self.settings.get('key', '')
+        
+        config['auto_copy'] = self.settings.get('auto_copy', False)
+        config['save_key'] = self.settings.get('save_key', True)
+        
+        save_config(config)
 
 class AvatarWidget(QWidget):
     def __init__(self, parent=None):
@@ -193,6 +285,8 @@ class MainController(QWidget):
         self.setContextMenuPolicy(Qt.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
 
+        # 初始化窗口尺寸
+        self.update_layout()
         self.restore_or_center()
 
     def restore_or_center(self):
@@ -211,13 +305,13 @@ class MainController(QWidget):
         if self.panel.isVisible():
             panel_x = 0
             panel_y = 0
-            avatar_x = (self.panel.width() - self.avatar.width()) // 2
+            avatar_x = max(0, (self.panel.width() - self.avatar.width()) // 2)
             avatar_y = self.panel.height() + 10
             self.panel.move(panel_x, panel_y)
             self.avatar.move(avatar_x, avatar_y)
 
-            new_width = self.panel.width()
-            new_height = self.avatar.y() + self.avatar.height()
+            new_width = max(self.panel.width(), self.avatar.width())
+            new_height = max(self.avatar.y() + self.avatar.height(), self.panel.height() + self.avatar.height() + 10)
             self.resize(new_width, new_height)
         else:
             self.avatar.move(0, 0)
