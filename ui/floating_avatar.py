@@ -49,8 +49,8 @@ class PopupPanel(QWidget):
         shadow.setOffset(0, 6)
         self.setGraphicsEffect(shadow)
         self.algorithms = [
-            ('Unicode码位移（支持中文）', '每个字符的Unicode码+3，解密时每个字符的Unicode码-3。\n可用Python、在线Unicode工具还原。\n示例：明文“abc”→密文“def”，明文“你好”→密文“呜咍”'),
-            ('Base64（支持中文）', '将文本用Base64编码，解密时用任意Base64解码工具还原。\n如 https://base64.us/\n示例：明文“abc”→密文“YWJj”，明文“你好”→密文“5L2g5aW9”')
+            ('Unicode复合变换（支持中文）', '基于密钥的多步骤数学变换：\n1. 密钥MD5哈希生成变换参数（乘法因子、偏移量、位移、XOR掩码）\n2. 仿射变换：(字符码×乘法因子+偏移) mod 65536\n3. 循环位移：16位循环左移操作\n4. XOR变换：与密钥衍生掩码异或\n解密需相同密钥进行严格逆向运算。'),
+            ('Base64密钥增强（支持中文）', '先进行Unicode复合变换，再Base64编码的双重加密：\n1. 使用密钥对文本进行复合数学变换\n2. 将变换结果进行Base64编码\n解密时需先Base64解码，再用相同密钥逆向变换。\n提供更高的安全性和复杂度。')
         ]
         self.combo = QComboBox(self)
         for name, _ in self.algorithms:
@@ -271,8 +271,12 @@ class AvatarWidget(QWidget):
 class MainController(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        
+        # 设置初始尺寸避免分层窗口问题
+        self.resize(64, 64)
 
         self.panel = PopupPanel(self)
         self.avatar = AvatarWidget(self)
@@ -288,6 +292,20 @@ class MainController(QWidget):
         # 初始化窗口尺寸
         self.update_layout()
         self.restore_or_center()
+    
+    def paintEvent(self, event):
+        # 确保绘制区域不超出窗口边界
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        # 只绘制透明背景，避免分层窗口问题
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 0))
+    
+    def resizeEvent(self, event):
+        # 确保尺寸变化时的正确处理
+        super().resizeEvent(event)
+        # 限制最小尺寸
+        if self.width() < 64 or self.height() < 64:
+            self.resize(max(64, self.width()), max(64, self.height()))
 
     def restore_or_center(self):
         config = load_config()
@@ -303,19 +321,30 @@ class MainController(QWidget):
 
     def update_layout(self):
         if self.panel.isVisible():
+            # 确保面板尺寸有效
+            panel_width = max(320, self.panel.width())
+            panel_height = max(320, self.panel.height())
+            
             panel_x = 0
             panel_y = 0
-            avatar_x = max(0, (self.panel.width() - self.avatar.width()) // 2)
-            avatar_y = self.panel.height() + 10
+            avatar_x = max(0, (panel_width - self.avatar.width()) // 2)
+            avatar_y = panel_height + 10
+            
             self.panel.move(panel_x, panel_y)
             self.avatar.move(avatar_x, avatar_y)
 
-            new_width = max(self.panel.width(), self.avatar.width())
-            new_height = max(self.avatar.y() + self.avatar.height(), self.panel.height() + self.avatar.height() + 10)
+            # 计算窗口尺寸时添加边界检查
+            new_width = max(panel_width, self.avatar.width(), 64)
+            new_height = max(avatar_y + self.avatar.height(), panel_height + self.avatar.height() + 10, 64)
+            
+            # 确保尺寸不超过合理范围
+            new_width = min(new_width, 800)
+            new_height = min(new_height, 600)
+            
             self.resize(new_width, new_height)
         else:
             self.avatar.move(0, 0)
-            self.resize(self.avatar.size())
+            self.resize(max(64, self.avatar.width()), max(64, self.avatar.height()))
 
     def mousePressEvent(self, event):
         if self.avatar.geometry().contains(event.pos()):

@@ -6,42 +6,102 @@
 
 ## 算法原理
 
-本项目内置两种可逆的文本“加/解密”方式，均支持中文：
+本项目内置两种可逆的文本"加/解密"方式，均支持中文和密钥增强：
 
-- Unicode 码位移（+3/-3）
-  - 思路：将明文中每个字符的 Unicode 码点加 3，得到密文；解密时每个字符减 3 还原。
-  - 形式化：设明文字符为 \(c\)，其码点为 \(code(c)\)，则
-    - 加密：\(c' = chr(code(c)+3)\)
-    - 解密：\(c = chr(code(c')-3)\)
-  - 示例：
-    - "abc" → "def"
-    - "你好" → "呜咍"
-  - 特性：实现简单、可逆、对 Unicode 友好；但安全性较弱，不适合保护敏感信息，仅作轻量私密或演示用途。
+### Unicode 复合变换加密
 
-- Base64 编解码
-  - 思路：将文本按 UTF-8 编码为字节序列，再用 Base64 进行编码；解密时反向解码并按 UTF-8 还原文本。
-  - 示例：
-    - "abc" → "YWJj"
-    - "你好" → "5L2g5aW9"
-  - 特性：广泛兼容、可逆、非加密而是“文本传输编码”。任何标准 Base64 工具均可还原。
+这是一种基于密钥的多步骤可逆变换算法，通过组合多种数学变换来增强安全性：
 
-伪代码（Python）：
+**核心思路：**
+1. **密钥变换**：将用户密钥通过 MD5 哈希转换为 128 位二进制数据
+2. **参数提取**：从哈希值中提取四个变换参数：
+   - 乘法因子（确保与 65536 互质）
+   - 加法偏移量
+   - 循环位移量
+   - XOR 掩码
+3. **多步变换**：对每个字符的 Unicode 码点依次应用：
+   - 仿射变换：`(code * factor + offset) mod 65536`
+   - 循环位移：左移或右移指定位数
+   - XOR 变换：与掩码进行异或运算
 
+**特性：**
+- 密钥敏感：不同密钥产生完全不同的变换序列
+- 可逆性强：每步变换都有对应的逆变换
+- Unicode 兼容：支持所有 Unicode 字符
+- 安全性较高：多步变换增加破解难度
+
+### Base64 密钥增强编码
+
+在标准 Base64 编码基础上增加密钥变换层：
+
+**处理流程：**
+1. **预处理**：如果启用密钥，先对文本进行 Unicode 复合变换
+2. **编码**：将处理后的文本按 UTF-8 编码为字节序列
+3. **Base64**：对字节序列进行标准 Base64 编码
+4. **解码**：反向执行上述步骤
+
+**特性：**
+- 双重保护：密钥变换 + Base64 编码
+- 传输友好：输出为标准 Base64 格式
+- 向下兼容：无密钥时等同于标准 Base64
+
+### 密钥系统
+
+**密钥生成：**
 ```python
-# Unicode 码位移
-def encrypt_unicode_shift(text):
-    return "".join(chr(ord(ch)+3) for ch in text)
+def generate_random_key(length=16):
+    """生成指定长度的随机密钥"""
+    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(secrets.choice(chars) for _ in range(length))
+```
 
-def decrypt_unicode_shift(text):
-    return "".join(chr(ord(ch)-3) for ch in text)
+**变换序列生成：**
+```python
+def key_to_transform_sequence(key):
+    """将密钥转换为变换参数序列"""
+    hash_bytes = hashlib.md5(key.encode('utf-8')).digest()
+    # 提取四个32位参数
+    factor = struct.unpack('<I', hash_bytes[0:4])[0]
+    offset = struct.unpack('<I', hash_bytes[4:8])[0] 
+    shift = struct.unpack('<I', hash_bytes[8:12])[0] % 16
+    xor_mask = struct.unpack('<I', hash_bytes[12:16])[0]
+    
+    # 确保乘法因子与65536互质
+    while gcd(factor, 65536) != 1:
+        factor = (factor + 1) % 65536
+    
+    return factor, offset, shift, xor_mask
+```
 
-# Base64（UTF-8）
-import base64
-def encrypt_base64(text):
-    return base64.b64encode(text.encode('utf-8')).decode('utf-8')
-
-def decrypt_base64(text):
-    return base64.b64decode(text.encode('utf-8')).decode('utf-8')
+**核心变换算法：**
+```python
+def apply_key_transform(text, key, encrypt=True):
+    """应用密钥变换"""
+    if not key:
+        return text
+    
+    factor, offset, shift, xor_mask = key_to_transform_sequence(key)
+    result = []
+    
+    for i, char in enumerate(text):
+        code = ord(char)
+        param_index = i % 4
+        
+        if encrypt:
+            # 加密：仿射变换 -> 位移 -> XOR
+            code = (code * factor + offset) % 65536
+            code = ((code << shift) | (code >> (16 - shift))) & 0xFFFF
+            code ^= xor_mask
+        else:
+            # 解密：逆XOR -> 逆位移 -> 逆仿射变换
+            code ^= xor_mask
+            code = ((code >> shift) | (code << (16 - shift))) & 0xFFFF
+            inv_factor = mod_inverse(factor, 65536)
+            code = (inv_factor * (code - offset)) % 65536
+        
+        result.append(chr(code))
+    
+    return ''.join(result)
 ```
 
 ## 目录
