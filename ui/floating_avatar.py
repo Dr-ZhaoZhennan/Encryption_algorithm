@@ -1,6 +1,6 @@
 import sys
 from PyQt5.QtWidgets import QWidget, QApplication, QMenu, QAction, QVBoxLayout, QComboBox, QTextEdit, QPushButton, QHBoxLayout, QGraphicsDropShadowEffect, QLabel
-from PyQt5.QtGui import QPainter, QPixmap, QRegion, QCursor, QColor, QFont
+from PyQt5.QtGui import QPainter, QPixmap, QRegion, QCursor, QColor, QFont, QGuiApplication
 from PyQt5.QtCore import Qt, QPoint, QTimer, QRect
 import os
 import json
@@ -27,8 +27,11 @@ def save_config(data):
 class PopupPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground)
+        # 顶层或子控件自适应：无父时作为顶层窗口，有父时作为子控件
+        if parent is None:
+            self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Window)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_InputMethodEnabled, True)
         self.setFixedSize(320, 260)
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(24)
@@ -44,7 +47,7 @@ class PopupPanel(QWidget):
             self.combo.addItem(name)
         self.decrypt_hint = QLabel(self)
         self.decrypt_hint.setStyleSheet('color:#bbb;font-size:12px;')
-        self.decrypt_hint.setText('解密算法：' + self.combo.currentText())
+        self.update_decrypt_hint()
         self.combo.currentIndexChanged.connect(self.update_decrypt_hint)
         self.text_edit = QTextEdit(self)
         self.text_edit.setPlaceholderText('请输入或粘贴文本...')
@@ -57,7 +60,7 @@ class PopupPanel(QWidget):
         self.decrypt_detail.setStyleSheet('color:#888;font-size:12px;')
         self.decrypt_detail.setWordWrap(True)
         self.decrypt_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.decrypt_detail.setText('')
+        self.update_decrypt_detail()
         vbox = QVBoxLayout()
         vbox.setContentsMargins(20, 20, 20, 20)
         vbox.setSpacing(8)
@@ -80,7 +83,21 @@ class PopupPanel(QWidget):
         self.btn_clear.clicked.connect(self.clear_text)
         self.combo.currentIndexChanged.connect(self.update_decrypt_detail)
         self.text_edit.textChanged.connect(self.update_decrypt_detail)
-        self.update_decrypt_detail()
+
+    def ensure_input_focus(self):
+        try:
+            self.raise_()
+            # 子控件/顶层均尝试聚焦到文本框
+            self.text_edit.setFocus(Qt.OtherFocusReason)
+            im = QGuiApplication.inputMethod()
+            if im:
+                im.show()
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(50, self.ensure_input_focus)
 
     def update_decrypt_hint(self):
         self.decrypt_hint.setText('解密算法：' + self.combo.currentText())
@@ -139,40 +156,113 @@ class PopupPanel(QWidget):
     def clear_text(self):
         self.text_edit.clear()
 
-class FloatingAvatar(QWidget):
-    def __init__(self):
-        super().__init__()
+class AvatarWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.avatar_size = 64
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.setAttribute(Qt.WA_TranslucentBackground)
-        self.resize(self.avatar_size, self.avatar_size)
-        self.drag_position = None
-        self.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.show_context_menu)
+        self.setFixedSize(self.avatar_size, self.avatar_size)
         avatar_path = os.path.join(os.path.dirname(__file__), 'resources', 'photo.png')
         if os.path.exists(avatar_path):
-            self.avatar = QPixmap(avatar_path).scaled(self.avatar_size, self.avatar_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.avatar = QPixmap(avatar_path).scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         else:
-            self.avatar = QPixmap(self.avatar_size, self.avatar_size)
+            self.avatar = QPixmap(self.size())
             self.avatar.fill(QColor(120, 120, 120))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        region = QRegion(self.rect(), QRegion.Ellipse)
+        self.setMask(region)
+        painter.drawPixmap(0, 0, self.avatar)
+
+
+class MainController(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
         self.panel = PopupPanel(self)
+        self.avatar = AvatarWidget(self)
         self.panel.hide()
+
+        self.drag_offset = QPoint()
+        self.mouse_press_pos = None
+        self.click_threshold = 6
+
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+
         self.restore_or_center()
 
     def restore_or_center(self):
         config = load_config()
         pos = config.get('window_pos')
-        screen = QApplication.primaryScreen().geometry()
+        screen_rect = QApplication.primaryScreen().geometry()
         if pos and isinstance(pos, list) and len(pos) == 2:
-            x = max(0, min(pos[0], screen.width() - self.avatar_size))
-            y = max(0, min(pos[1], screen.height() - self.avatar_size))
-            self.move(x, y)
+            self.move(QPoint(pos[0], pos[1]))
         else:
-            x = (screen.width() - self.avatar_size) // 2
-            y = screen.height() - self.avatar_size - 80
-            x = max(0, min(x, screen.width() - self.avatar_size))
-            y = max(0, min(y, screen.height() - self.avatar_size))
+            x = screen_rect.width() - self.avatar.width() - 80
+            y = screen_rect.height() - self.avatar.height() - 80
             self.move(x, y)
+        self.resize(self.avatar.size())
+
+    def update_layout(self):
+        if self.panel.isVisible():
+            panel_x = 0
+            panel_y = 0
+            avatar_x = (self.panel.width() - self.avatar.width()) // 2
+            avatar_y = self.panel.height() + 10
+            self.panel.move(panel_x, panel_y)
+            self.avatar.move(avatar_x, avatar_y)
+
+            new_width = self.panel.width()
+            new_height = self.avatar.y() + self.avatar.height()
+            self.resize(new_width, new_height)
+        else:
+            self.avatar.move(0, 0)
+            self.resize(self.avatar.size())
+
+    def mousePressEvent(self, event):
+        if self.avatar.geometry().contains(event.pos()):
+            if event.button() == Qt.LeftButton:
+                self.drag_offset = event.globalPos() - self.pos()
+                self.mouse_press_pos = event.globalPos()
+                event.accept()
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() == Qt.LeftButton and self.mouse_press_pos:
+            self.move(event.globalPos() - self.drag_offset)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.mouse_press_pos:
+            moved_distance = (event.globalPos() - self.mouse_press_pos).manhattanLength()
+            if moved_distance <= self.click_threshold:
+                self.toggle_panel()
+            self.mouse_press_pos = None
+            event.accept()
+
+    def toggle_panel(self):
+        # 统一保持头像的全局位置不变
+        avatar_global_before = self.mapToGlobal(self.avatar.pos())
+        if self.panel.isVisible():
+            self.panel.hide()
+        else:
+            self.panel.show()
+        self.update_layout()
+        avatar_global_after = self.mapToGlobal(self.avatar.pos())
+        self.move(self.pos() + (avatar_global_before - avatar_global_after))
+        if self.panel.isVisible():
+            self.panel.text_edit.setFocus()
+
+    def show_context_menu(self, pos):
+        if self.avatar.geometry().contains(pos):
+            menu = QMenu(self)
+            quit_action = QAction('退出', self)
+            quit_action.triggered.connect(QApplication.instance().quit)
+            menu.addAction(quit_action)
+            menu.exec_(self.mapToGlobal(pos))
 
     def closeEvent(self, event):
         pos = self.pos()
@@ -180,57 +270,3 @@ class FloatingAvatar(QWidget):
         config['window_pos'] = [pos.x(), pos.y()]
         save_config(config)
         super().closeEvent(event)
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        region = QRegion(QRect(0, 0, self.avatar_size, self.avatar_size), QRegion.Ellipse)
-        self.setMask(region)
-        painter.drawPixmap(0, 0, self.avatar)
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.drag_position = event.globalPos() - self.frameGeometry().topLeft()
-            event.accept()
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() == Qt.LeftButton and self.drag_position:
-            self.move(event.globalPos() - self.drag_position)
-            if self.panel.isVisible():
-                self.update_panel_pos()
-            event.accept()
-
-    def mouseReleaseEvent(self, event):
-        self.drag_position = None
-
-    def show_context_menu(self, pos):
-        menu = QMenu(self)
-        quit_action = QAction('退出', self)
-        quit_action.triggered.connect(QApplication.instance().quit)
-        menu.addAction(quit_action)
-        menu.exec_(QCursor.pos())
-
-    def enterEvent(self, event):
-        self.show_panel()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        QTimer.singleShot(200, self.try_hide_panel)
-        super().leaveEvent(event)
-
-    def show_panel(self):
-        self.update_panel_pos()
-        self.panel.show()
-        self.panel.raise_()
-
-    def try_hide_panel(self):
-        if not self.underMouse() and not self.panel.underMouse():
-            self.panel.hide()
-
-    def update_panel_pos(self):
-        screen = QApplication.primaryScreen().geometry()
-        x = self.x() + (self.avatar_size - self.panel.width()) // 2
-        y = self.y() - self.panel.height() - 8
-        x = max(0, min(x, screen.width() - self.panel.width()))
-        y = max(0, min(y, screen.height() - self.panel.height()))
-        self.panel.move(x, y) 
